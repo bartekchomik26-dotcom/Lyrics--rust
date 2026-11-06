@@ -1,0 +1,4 @@
+# The engine crate builds and tests on its own: cargo test --workspace
+[workspace]
+members = ["mixins/lyricsplus/engine"]
+resolver = "2"
