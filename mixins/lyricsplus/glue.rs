@@ -72,6 +72,9 @@ enum Action {
     OpenFolder,
     OpenFonts,
     ReloadFonts,
+    SongMinus,
+    SongPlus,
+    SongReset,
     MusicPrevious,
     MusicToggle,
     MusicNext,
@@ -644,7 +647,20 @@ fn lyric_text(cfg: &Config, s: &str) -> String {
 const LEAD_MS: i64 = 150;
 
 fn lyric_pos(cfg: &Config, snap: &Snapshot) -> u64 {
-    (snap.position_ms as i64 + cfg.offset_ms + LEAD_MS).max(0) as u64
+    let song = snap.track.as_ref().and_then(|t| cfg.song_offsets.get(&t.key)).copied().unwrap_or(0);
+    (snap.position_ms as i64 + cfg.offset_ms + song + LEAD_MS).max(0) as u64
+}
+
+/// Moves this song's own offset by `delta` ms (0: back to none).
+fn nudge_song(e: &engine::Engine, delta: i64) -> Option<i64> {
+    let key = e.snapshot().track.as_ref()?.key.clone();
+    let mut now = 0;
+    e.update_config(|c| {
+        let v = if delta == 0 { 0 } else { c.song_offsets.get(&key).copied().unwrap_or(0) + delta };
+        c.song_offsets.insert(key.clone(), v);
+        now = v;
+    });
+    Some(now)
 }
 
 fn visible(g: &Game<'_>, ui: &Ui) -> bool {
@@ -2089,16 +2105,9 @@ fn place(g: &Game<'_>, words: &[String], st: &Style, look: &dyn Fn(usize) -> Loo
             }
         }
     }
-    // The kick: the line rocks, right side up, then left, word by word.
-    if fx.highlight == Highlight::Kick
-        && let Some((k, p)) = fx.sung
-    {
-        let angle = if k % 2 == 0 { -9.0 } else { 9.0 } * jump(p);
-        for i in 0..n {
-            centre[i] = rotate(centre[i], angle);
-            tilt[i] += angle;
-        }
-    }
+    let kick = fx.highlight == Highlight::Kick;
+    let wipe = fx.vanish == Vanish::Wipe;
+    let (sung_k, sung_p) = fx.sung.unwrap_or((usize::MAX, 0.0));
     let mut units = Vec::with_capacity(n);
     let mut word_centres = Vec::with_capacity(n);
     for i in 0..n {
@@ -2114,21 +2123,48 @@ fn place(g: &Game<'_>, words: &[String], st: &Style, look: &dyn Fn(usize) -> Loo
             _ => {}
         }
         cy -= l.lift;
+        let mut word_tilt = tilt[i];
+        // The kick: only the word being sung rocks, right side up, then left,
+        // settling, with a wave running through its letters.
+        let kicked = kick && i == sung_k;
+        let q = (sung_p * 1.6).min(1.0);
+        if kicked {
+            word_tilt += -13.0 * (q * std::f32::consts::TAU).sin() * (1.0 - q);
+            cy -= 2.0 * (q * std::f32::consts::PI).sin();
+        }
+        // The wipe: words sung before this one are gone; the one just sung
+        // disappears letter by letter, left to right. Nothing else changes.
+        let wiping = wipe && i + 1 == sung_k;
+        let word_alpha = if wipe && i + 1 < sung_k { 0.0 } else { 1.0 };
         word_centres.push([cx, cy]);
-        if fx.motion == Motion::Wave {
-            // Letter by letter, along the word's own tilt, on a travelling wave.
+        let letters = fx.motion == Motion::Wave || kicked || wiping;
+        if letters {
+            let cut = ease_out((sung_p * 2.2).min(1.0)) * 1.3 - 0.15;
             let mut off = -nat[i] / 2.0;
             for ch in words[i].chars() {
                 let cs = ch.to_string();
                 let cw = width(g, &text(&cs, st));
-                let o = rotate([(off + cw / 2.0) * sc, 0.0], tilt[i]);
-                let (x, y) = (cx + o[0], cy + o[1]);
-                let phase = fx.clock * 4.2 - x * 0.09;
-                units.push(Placed { text: cs, word: i, cx: x, cy: y + phase.sin() * 2.2, w: cw, scale: sc, tilt: tilt[i] + phase.cos() * 6.0, color: l.color, underline: l.underline });
+                let o = rotate([(off + cw / 2.0) * sc, 0.0], word_tilt);
+                let (x, mut y, mut t) = (cx + o[0], cy + o[1], word_tilt);
+                if fx.motion == Motion::Wave {
+                    let phase = fx.clock * 4.2 - x * 0.09;
+                    y += phase.sin() * 2.2;
+                    t += phase.cos() * 6.0;
+                }
+                if kicked {
+                    let lx = off + cw / 2.0;
+                    y -= (q * 9.0 - lx * 0.25).sin() * 1.6 * (1.0 - q);
+                }
+                let mut color = with_alpha(l.color, word_alpha);
+                if wiping {
+                    let xn = (off + cw / 2.0) / nat[i].max(1.0) + 0.5;
+                    color = with_alpha(color, ((xn - cut) / 0.25 + 0.5).clamp(0.0, 1.0));
+                }
+                units.push(Placed { text: cs, word: i, cx: x, cy: y, w: cw, scale: sc, tilt: t, color, underline: l.underline });
                 off += cw;
             }
         } else {
-            units.push(Placed { text: words[i].clone(), word: i, cx, cy, w: nat[i], scale: sc, tilt: tilt[i], color: l.color, underline: l.underline });
+            units.push(Placed { text: words[i].clone(), word: i, cx, cy, w: nat[i], scale: sc, tilt: word_tilt, color: with_alpha(l.color, word_alpha), underline: l.underline });
         }
     }
     let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
@@ -2151,14 +2187,7 @@ fn place(g: &Game<'_>, words: &[String], st: &Style, look: &dyn Fn(usize) -> Loo
                 }
             }
         }
-        Vanish::Wipe => {
-            let span = (bounds[2] - bounds[0]).max(1.0);
-            let cut = fx.progress * 1.2 - 0.1;
-            for u in &mut units {
-                let xn = (u.cx - bounds[0]) / span;
-                u.color = with_alpha(u.color, ((xn - cut) / 0.12 + 0.5).clamp(0.0, 1.0));
-            }
-        }
+        Vanish::Wipe => {}
     }
     Layout { units, bounds, words: word_centres }
 }
@@ -2232,6 +2261,8 @@ fn draw_line_world(
         emit(out, side, &b, -0.08);
     }
     let outline = cfg.outline_3d || cfg.highlight == Highlight::Glow;
+    // One batch for every piece, emptied after each (no allocation per word).
+    let mut b = HudBatch::new([1, 1]);
     for u in &lay.units {
         if (u.color >> 24) < 6 || u.text.is_empty() {
             continue;
@@ -2245,13 +2276,13 @@ fn draw_line_world(
         let alpha = (u.color >> 24) as f32 / 255.0;
         if outline {
             let ink = if cfg.highlight == Highlight::Glow { argb(ui.accent(), 0.85 * alpha) } else { argb(0x000000, 0.7 * alpha) };
-            let mut b = HudBatch::new([1, 1]);
+            b.vertices.clear();
             for (ox, oy) in [(-0.75, 0.0), (0.75, 0.0), (0.0, -0.75), (0.0, 0.75)] {
                 draw(g, &mut b, &t, ox, oy, 1.0, ink, false);
             }
             emit(out, m, &b, -0.05);
         }
-        let mut b = HudBatch::new([1, 1]);
+        b.vertices.clear();
         draw(g, &mut b, &t, 0.0, 0.0, 1.0, u.color, false);
         if u.underline {
             fill_white(g, &mut b, 0.0, 10.0, u.w, 0.9, argb(0xFFFFFF, alpha));
@@ -2276,6 +2307,8 @@ fn world_sparks(g: &Game<'_>, out: &mut Vec<Vertex>, camera: [f64; 3], burst: &W
     let Some(side) = facing_side(pose, offset, two_sided) else { return };
     let t = age / life;
     let seed = burst.seed;
+    let mut b = HudBatch::new([1, 1]);
+    let mut cross = HudBatch::new([1, 1]);
     for i in 0..30u64 {
         let r = |k: u64| hash01(seed, i * 7 + k);
         // From the word, outward and a little up, slowing down.
@@ -2288,14 +2321,14 @@ fn world_sparks(g: &Game<'_>, out: &mut Vec<Vertex>, camera: [f64; 3], burst: &W
         // The gradient's colours, a few sparks near white.
         let c = if r(7) < 0.2 { art::mix(colors.1, 0xFFFFFF, 0.6) } else { art::mix(colors.0, colors.1, r(5)) };
         let a = (1.0 - t).powf(0.7) * if (age * 18.0 + r(6) * 6.0).sin() > -0.3 { 1.0 } else { 0.35 };
-        let mut b = HudBatch::new([1, 1]);
+        b.vertices.clear();
         fill_white(g, &mut b, -size / 2.0, -size / 2.0, size, size, argb(c, a));
         // A diamond: the square turned 45°, and a thin cross for the twinkle.
         let m = side
             * glam::Mat4::from_translation(glam::Vec3::new(x, y, 0.1))
             * glam::Mat4::from_quat(glam::Quat::from_axis_angle(glam::Vec3::Z, std::f32::consts::FRAC_PI_4));
         emit(out, m, &b, 0.0);
-        let mut cross = HudBatch::new([1, 1]);
+        cross.vertices.clear();
         fill_white(g, &mut cross, -size * 1.6, -0.15, size * 3.2, 0.3, argb(c, a * 0.8));
         fill_white(g, &mut cross, -0.15, -size * 1.6, 0.3, size * 3.2, argb(c, a * 0.8));
         emit(out, side * glam::Mat4::from_translation(glam::Vec3::new(x, y, 0.12)), &cross, 0.0);
@@ -2755,6 +2788,11 @@ fn rows(tab: usize, fonts: usize, songs: usize) -> Vec<Row> {
             Info(|_, c| format!("Lyrics offset: {:+} ms (positive shows lines earlier)", c.offset_ms)),
             Buttons(&[("-250 ms", Action::OffsetMinus), ("+250 ms", Action::OffsetPlus)]),
             Input("Offset (ms)", Field::Offset),
+            Info(|s, c| match &s.track {
+                Some(t) => format!("This song only: {:+} ms (when one song is early or late)", c.song_offsets.get(&t.key).copied().unwrap_or(0)),
+                None => "This song only: play a song to adjust it".into(),
+            }),
+            Buttons(&[("Song -250 ms", Action::SongMinus), ("Song +250 ms", Action::SongPlus), ("Reset song", Action::SongReset)]),
             Header("Layout"),
             Buttons(&[("Edit HUD layout (drag)", Action::Layout), ("Reset all settings", Action::Reset)]),
         ],
@@ -3484,6 +3522,15 @@ fn act(game: &Game<'_>, ui: &mut Ui, action: Action) {
             ui.pending.push(Pending::Chat(format!("[LyricsPlus] Fonts folder: {}", dir.display())));
         }
         Action::ReloadFonts => ui.pending.push(Pending::ReloadFonts),
+        Action::SongMinus => {
+            nudge_song(e, -250);
+        }
+        Action::SongPlus => {
+            nudge_song(e, 250);
+        }
+        Action::SongReset => {
+            nudge_song(e, 0);
+        }
         Action::MusicPrevious => engine::player::control(e, Control::Previous),
         Action::MusicToggle => engine::player::control(e, Control::PlayPause),
         Action::MusicNext => engine::player::control(e, Control::Next),
@@ -3959,6 +4006,14 @@ pub(crate) fn command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
             say(game, "Fetching lyrics again…");
         }
         "next" | "skip" => e.control(Control::Next),
+        "sync" => {
+            let a = arg.trim();
+            let delta = if a == "reset" { Some(0) } else { a.trim_start_matches('+').trim_end_matches("ms").parse::<i64>().ok() };
+            match delta.and_then(|d| nudge_song(e, d)) {
+                Some(v) => say(game, &format!("This song's offset: {v:+} ms (positive shows lines earlier).")),
+                None => say(game, "Usage: /lyrics sync <+ms|-ms|reset> while a song plays"),
+            }
+        }
         "pvp" => {
             let mut on = false;
             e.update_config(|c| {
@@ -3979,6 +4034,6 @@ pub(crate) fn command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
             let track = s.track.as_ref().map_or("nothing".to_owned(), |t| format!("{} – {} via {:?} ({})", t.title, t.artist, t.origin, t.app));
             say(game, &format!("Playing: {track}; lyrics: {:?} ({} lines{}); source setting: {}; Spotify: {:?}", s.lyrics_state, s.lyrics.lines.len(), if s.lyrics.synced { ", synced" } else { "" }, c.source.label(), s.spotify));
         }
-        _ => say(game, "/lyrics [menu|on|off|toggle|mode <hud|3d|both>|source <auto|spotify|system|bridge|local>|spotify <client id>|connect|disconnect|offset <ms>|font <id>|titlefont <id>|reload|next|prev|pause|pvp|bridge|status]"),
+        _ => say(game, "/lyrics [menu|on|off|toggle|mode <hud|3d|both>|source <auto|spotify|system|bridge|local>|spotify <client id>|connect|disconnect|offset <ms>|font <id>|titlefont <id>|reload|next|prev|pause|pvp|sync <ms>|bridge|status]"),
     }
 }

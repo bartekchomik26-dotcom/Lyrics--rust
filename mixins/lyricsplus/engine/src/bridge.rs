@@ -90,6 +90,7 @@ fn handle(engine: &Engine, mut stream: TcpStream, port: u16) -> std::io::Result<
     let method = parts.next().unwrap_or("").to_owned();
     let path = parts.next().unwrap_or("").split('?').next().unwrap_or("").to_owned();
     let mut length = 0usize;
+    let mut origin: Option<String> = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 {
@@ -99,10 +100,12 @@ fn handle(engine: &Engine, mut stream: TcpStream, port: u16) -> std::io::Result<
         if header.is_empty() {
             break;
         }
-        if let Some((k, v)) = header.split_once(':')
-            && k.trim().eq_ignore_ascii_case("content-length")
-        {
-            length = v.trim().parse().unwrap_or(0);
+        if let Some((k, v)) = header.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                length = v.trim().parse().unwrap_or(0);
+            } else if k.trim().eq_ignore_ascii_case("origin") {
+                origin = Some(v.trim().to_ascii_lowercase());
+            }
         }
     }
     if length > MAX_BODY {
@@ -111,6 +114,11 @@ fn handle(engine: &Engine, mut stream: TcpStream, port: u16) -> std::io::Result<
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body)?;
     let json = || serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
+    // Only players, the userscript and local apps may change what shows: a web
+    // page from anywhere else can't post to the bridge from the browser.
+    if method == "POST" && !trusted(origin.as_deref()) {
+        return respond(&mut stream, "403 Forbidden", r#"{"success":false}"#);
+    }
     match (method.as_str(), path.as_str()) {
         ("OPTIONS", _) => respond(&mut stream, "204 No Content", ""),
         ("GET", "/status") | ("GET", "/") => respond(
@@ -167,6 +175,33 @@ fn handle(engine: &Engine, mut stream: TcpStream, port: u16) -> std::io::Result<
     }
 }
 
+/// Music sites the userscript covers, whose pages may post to the bridge.
+const SITES: [&str; 11] = [
+    "soundcloud.com",
+    "music.youtube.com",
+    "www.youtube.com",
+    "open.spotify.com",
+    "www.deezer.com",
+    "listen.tidal.com",
+    "music.apple.com",
+    "bandcamp.com",
+    "music.amazon.com",
+    "www.mixcloud.com",
+    "audiomack.com",
+];
+
+/// Whether a request's `Origin` may post: none (apps, OBS, userscript managers'
+/// own requests), a browser extension, or one of the music sites.
+fn trusted(origin: Option<&str>) -> bool {
+    let Some(o) = origin else { return true };
+    if ["chrome-extension://", "moz-extension://", "safari-web-extension://"].iter().any(|p| o.starts_with(p)) {
+        return true;
+    }
+    let host = o.strip_prefix("https://").or_else(|| o.strip_prefix("http://")).unwrap_or("");
+    let host = host.split(':').next().unwrap_or("");
+    SITES.iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+}
+
 /// An `/update` body as a sample (None when nothing plays).
 fn sample(v: &serde_json::Value) -> Option<Sample> {
     let title = v["title"].as_str()?.trim().to_owned();
@@ -193,6 +228,17 @@ fn sample(v: &serde_json::Value) -> Option<Sample> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_music_sites_post() {
+        assert!(trusted(None));
+        assert!(trusted(Some("https://soundcloud.com")));
+        assert!(trusted(Some("https://artist.bandcamp.com")));
+        assert!(trusted(Some("chrome-extension://abc")));
+        assert!(!trusted(Some("https://evil.example")));
+        assert!(!trusted(Some("https://soundcloud.com.evil.example")));
+        assert!(!trusted(Some("null")));
+    }
 
     #[test]
     fn reads_the_original_bridge_fields() {

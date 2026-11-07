@@ -28,7 +28,7 @@ def package():
         rel = path.relative_to(bundle)
         if not path.is_file() or 'target' in rel.parts or path.name == 'Cargo.lock':
             continue
-        if path.suffix in ('.rs', '.toml') or rel.parts[0] == 'data':
+        if path.suffix in ('.rs', '.toml') or rel.parts[0] == 'data' or (path.name in ('LICENSE', 'NOTICE.md') and len(rel.parts) <= 2):
             files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
     if len(files) > 512:
         raise SystemExit('a .hnmod holds at most 512 entries')

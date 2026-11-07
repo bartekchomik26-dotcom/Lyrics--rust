@@ -1,0 +1,15 @@
+name = "LyricsPlus"
+summary = "Synced lyrics in 2D, in the world or in a top island, a Spotify-style now-playing card, and an offline music player."
+authors = ["FRK (original LyricsPlus)", "Horizon port contributors"]
+license = "MIT"
+description = """
+A port of FRK's Fabric mod **LyricsPlus** (MIT) to Horizon as a native mod.
+
+- Synced lyrics from LRCLIB, word by word: jump & pop, kick, wavy, sweep and more, with sparks from the last word
+- Lyrics on the HUD, hanging in the world (works with shader packs), in a customizable island, or in elytra mode
+- PvP mode, layouts (split, scrambled, arc, aura), gradients with a colour wheel, 10 built-in fonts plus your own
+- Now-playing card and toast with the cover, adaptive colours from the album art
+- Sources: Spotify Web API, the system's media controls, a browser bridge (SoundCloud, YouTube Music, Deezer…), and an offline player for your own MP3s
+
+Press **K** in game for the menu. See the README for what the mod does on your computer (helper processes, local ports, network).
+"""

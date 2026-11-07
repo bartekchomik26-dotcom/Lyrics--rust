@@ -14,7 +14,7 @@ const MISS_TTL: u64 = 24 * 3600;
 
 fn cache_path(dir: &Path, track: &Track) -> PathBuf {
     dir.join("cache")
-        .join("lyrics")
+        .join("lyrics-v2")
         .join(format!("{}.json", util::file_key(&track.key)))
 }
 
@@ -76,7 +76,12 @@ pub fn find(dir: &Path, track: &Track, supplied: Option<&str>) -> (Lyrics, Lyric
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
     {
-        if cached["found"].as_bool() == Some(true) {
+        // Cached for another version of the song (a radio edit, a video with an
+        // intro): its timings would be off, so look again.
+        let other_version = track.duration_ms > 0
+            && cached["duration"].as_f64().is_some_and(|d| d > 0.0 && (d - track.duration_ms as f64 / 1000.0).abs() > 4.0);
+        if other_version {
+        } else if cached["found"].as_bool() == Some(true) {
             if let Some(l) = from_record(&cached, track.duration_ms, "LRCLIB (cached)") {
                 let state = if l.instrumental {
                     LyricsState::Instrumental
@@ -98,6 +103,7 @@ pub fn find(dir: &Path, track: &Track, supplied: Option<&str>) -> (Lyrics, Lyric
                 "syncedLyrics": record["syncedLyrics"],
                 "plainLyrics": record["plainLyrics"],
                 "instrumental": record["instrumental"],
+                "duration": record["duration"],
             });
             if found.is_none() {
                 keep["syncedLyrics"] = Value::Null;

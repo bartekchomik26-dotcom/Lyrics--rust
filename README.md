@@ -30,9 +30,10 @@ HUD, in 2D or floating in the world, with its own settings menu.
 - **Moving word styles** (Style tab > Word style): *Jump & pop* (each word hops up and swells as it's
   sung, default), current word pops, one word at a time, karaoke sweep, solid, glow. A burst of **sparks**
   fires as each line finishes (2D, island and 3D).
-- **More motion**: *Kick* (the line rocks right side up, then left, word by word), and an idle motion for
+- **More motion**: *Kick* (the word being sung rocks right side up, then left, with a wave through its letters), and an idle motion for
   any style: *Wavy* (letters ride a travelling wave), *Floating* or *Breathing*. **Vanish**: sung words
-  disappear, or the line wipes away left to right as it's sung.
+  fade away, or each sung word wipes away letter by letter, left to right (only words already sung; the
+  rest of the line and the next rows stay).
 - **Layouts** (Style tab > Layout, with a Spread slider): one line, separated, scrambled, split (centre
   clear), stacked, stairs, arc, or an aura around you.
 - **PvP mode** (Numpad 0, `/lyrics pvp`, or automatically while fighting): the lyrics follow you, closer and
@@ -119,7 +120,7 @@ next **Numpad 6**, previous **Numpad 4**, PvP mode **Numpad 0**.
 
 `/lyrics` opens the menu. Subcommands: `on|off|toggle`, `mode hud|3d|both`,
 `source auto|spotify|system|bridge|local`, `spotify <client id>`, `connect`, `disconnect`, `offset <ms|+ms|-ms>`,
-`font <id>`, `titlefont <id>`, `reload`, `next|prev|pause`, `pvp`, `bridge`, `status`.
+`font <id>`, `titlefont <id>`, `reload`, `next|prev|pause`, `pvp`, `sync <+ms|-ms|reset>`, `bridge`, `status`.
 
 Settings are stored in `horizon-mods/.horizon-mod-data/lyricsplus/config.json`.
 
@@ -137,9 +138,34 @@ tools/package.py         writes target/lyricsplus-3.0.0.hnmod
 
 `cargo test --workspace` runs the engine's unit tests.
 
+## What it does on your computer
+
+Native mods run with your rights, so here is everything LyricsPlus does outside the game:
+
+- **Network**: lyrics from `lrclib.net`; covers from the player's own URL, iTunes Search or Deezer; Spotify's
+  Web API only when you link your own app key. Nothing else, and no data about you is sent.
+- **Local ports, on 127.0.0.1 only**: 8974, the browser bridge (posts are taken only from apps, browser
+  extensions and the listed music sites, never from other web pages), and 8975, Spotify's sign-in callback while
+  you link.
+- **Helper processes**: on Windows, PowerShell scripts it writes to its data folder read the system's media
+  session and play your offline music (Windows Media Player's engine), in a hidden window; they stop when the
+  game closes. On Linux `playerctl`, on macOS `osascript`; `mpv`, `ffplay` or `afplay` for offline music.
+  The browser opens only when you press a button that says so.
+- **Files**: only its own data folder (`horizon-mods/.horizon-mod-data/lyricsplus`: settings, caches, fonts,
+  music) and the music folder you choose.
+
+## Sync
+
+The lyrics follow the player's position (Spotify's API, the system's media session or the bridge) and
+start each line 150 ms early so its fade lands on time. The right version of a song's lyrics is picked by
+its length: LyricsPlus waits up to 2 s for a player that reports the length late, and looks again when a
+cached lyric belongs to a version of another length. Word timing comes from the lyrics when they have it
+(enhanced LRC), otherwise it's estimated from the letters. One song early or late (a video with an intro,
+a live take): General tab > Song ±250 ms, or `/lyrics sync +300`; it's remembered for that song.
+
 ## Performance
 
-Measured with the test harness (release build, the mod's hooks only): 0.03 to 0.12 ms of CPU a frame,
+Measured with the test harness (release build, the mod's hooks only): 0.03 to 0.07 ms of CPU a frame,
 depending on what's shown (the island with every effect is the most), and no image uploads after the first
 second. Covers decode on their own thread; a lyric font's common letters go into the atlas in one upload when
 it's chosen, and later uploads are batched to at most one every 150 ms. The Windows media helper reads every

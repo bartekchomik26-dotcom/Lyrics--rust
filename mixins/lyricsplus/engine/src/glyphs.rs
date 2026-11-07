@@ -6,6 +6,7 @@
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// The image's side (Horizon's `MOD_IMAGE_SIZE`).
 pub const SIZE: u32 = 1024;
@@ -69,6 +70,9 @@ pub struct Canvas {
     /// Rows changed since the last upload (0: none).
     dirty: u32,
     pub generation: u64,
+    /// Lines already laid out (cleared with the glyphs): drawing the same
+    /// words frame after frame costs a lookup.
+    lines: HashMap<usize, HashMap<String, Arc<Line>>>,
 }
 
 impl Default for Canvas {
@@ -88,6 +92,7 @@ impl Canvas {
             shelf_h: 0,
             dirty: SIZE,
             generation: 0,
+            lines: HashMap::new(),
         };
         c.white();
         c
@@ -153,6 +158,7 @@ impl Canvas {
         self.shelf_h = 0;
         self.dirty = SIZE;
         self.generation += 1;
+        self.lines.clear();
     }
     /// The cover art (`ART` x `ART` RGBA) into its corner.
     pub fn set_art(&mut self, rgba: &[u8]) {
@@ -224,14 +230,23 @@ impl Canvas {
     }
 
     /// `text` in font `font`, laid out with kerning, its glyphs rasterized as needed.
-    pub fn layout(&mut self, font: usize, text: &str) -> Line {
+    pub fn layout(&mut self, font: usize, text: &str) -> Arc<Line> {
+        if let Some(l) = self.lines.get(&font).and_then(|m| m.get(text)) {
+            return l.clone();
+        }
         let first = self.layout_once(font, text);
-        match first {
+        let line = Arc::new(match first {
             Some(l) => l,
             // The atlas was emptied midway: once more into the fresh shelves
             // (a line too big for the whole atlas keeps what fit).
             None => self.layout_once(font, text).unwrap_or_default(),
+        });
+        let m = self.lines.entry(font).or_default();
+        if m.len() >= 4096 {
+            m.clear();
         }
+        m.insert(text.to_owned(), line.clone());
+        line
     }
     fn layout_once(&mut self, font: usize, text: &str) -> Option<Line> {
         let Some((_, f)) = self.fonts.get(font) else {

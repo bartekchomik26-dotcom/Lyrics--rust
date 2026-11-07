@@ -110,6 +110,8 @@ pub struct Config {
     pub source: Source,
     /// Added to the position lyrics are looked up at (ms; positive shows them earlier).
     pub offset_ms: i64,
+    /// Extra offset for single songs (their lyrics' version can differ), by track key.
+    pub song_offsets: std::collections::BTreeMap<String, i64>,
     pub hide_when_paused: bool,
     pub hide_in_screens: bool,
     pub adaptive_colors: bool,
@@ -244,6 +246,7 @@ impl Default for Config {
             display: Display::World,
             source: Source::Auto,
             offset_ms: 0,
+            song_offsets: Default::default(),
             hide_when_paused: false,
             hide_in_screens: true,
             adaptive_colors: true,
@@ -410,6 +413,14 @@ impl Config {
         self.elytra_scale = clamp(self.elytra_scale, 0.5, 10.0, 3.0);
         self.spotify_poll_ms = self.spotify_poll_ms.clamp(500, 10_000);
         self.offset_ms = self.offset_ms.clamp(-30_000, 30_000);
+        self.song_offsets.retain(|_, v| *v != 0);
+        for v in self.song_offsets.values_mut() {
+            *v = (*v).clamp(-30_000, 30_000);
+        }
+        while self.song_offsets.len() > 1000 {
+            let first = self.song_offsets.keys().next().cloned().unwrap_or_default();
+            self.song_offsets.remove(&first);
+        }
         self.accent &= 0xFF_FFFF;
         self.volume = clamp(self.volume, 0.0, 1.0, 0.8);
         self.active_color &= 0xFF_FFFF;

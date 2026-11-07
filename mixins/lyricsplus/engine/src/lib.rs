@@ -576,6 +576,23 @@ impl Engine {
             .name("lyricsplus-lyrics".into())
             .spawn(move || {
                 let dir = self.data_dir();
+                // Players often say how long a song is a moment after it starts;
+                // the length picks the right version's timings, so wait for it a little.
+                let mut track = track;
+                if supplied.is_none() && track.duration_ms == 0 {
+                    for _ in 0..20 {
+                        std::thread::sleep(Duration::from_millis(100));
+                        let now = self.lock().current.as_ref().filter(|c| c.track.serial == track.serial).map(|c| c.track.clone());
+                        match now {
+                            Some(t) if t.duration_ms > 0 => {
+                                track = t;
+                                break;
+                            }
+                            Some(_) => {}
+                            None => return,
+                        }
+                    }
+                }
                 let (lyrics, state) = lyrics::find(&dir, &track, supplied.as_deref());
                 let mut s = self.lock();
                 if s.current.as_ref().is_some_and(|c| c.track.serial == track.serial) {
